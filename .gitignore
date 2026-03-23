@@ -1,0 +1,17 @@
+# Build output
+mc-fuse
+
+# SOPS-encrypted files are OK, but plaintext secrets are not
+*.yaml
+!example/values.yaml
+!example/secrets.yaml
+!example/server/**/*.yml
+!example/server/**/*.yaml
+!example/server/**/*.properties
+
+# FUSE deployments
+deployments/
+
+# OS
+.DS_Store
+*.log

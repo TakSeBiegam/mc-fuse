@@ -1,0 +1,16 @@
+# LuckPerms Configuration
+server: server
+
+storage-method: PostgreSQL
+data:
+  address: ${DB_HOST}
+  database: ${DB_NAME}
+  username: ${DB_USER}
+  password: ${DB_PASSWORD}
+  table-prefix: 'luckperms_'
+  pool-settings:
+    maximum-pool-size: 10
+    minimum-idle: 10
+    maximum-lifetime: 1800000
+    keepalive-time: 0
+    connection-timeout: 5000

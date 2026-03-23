@@ -1,0 +1,8 @@
+# values.yaml — Global shared secrets
+# Shared across all servers. Encrypt with SOPS before committing:
+#   sops --encrypt --age <pubkey> values.yaml > values.enc.yaml && rm values.yaml
+
+DB_HOST: "localhost:5432"
+DB_NAME: "minecraft"
+DB_USER: "mc-postgres"
+DB_PASSWORD: "change-me-to-a-strong-password"
