@@ -81,9 +81,13 @@ func (n *MCNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*
 	out.Attr.FromStat(&st)
 
 	child := n.childNode(name)
-	// Fresh inode after rename.
-	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT}
+	// Use real inode for stable identity (required by SQLite).
+	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT, Ino: st.Ino}
 	inode := n.NewInode(ctx, child, stable)
+	// If go-fuse reused an existing node, update its realPath.
+	if existing, ok := inode.Operations().(*MCNode); ok && existing.realPath != childPath {
+		existing.realPath = childPath
+	}
 	return inode, fs.OK
 }
 
@@ -179,7 +183,7 @@ func (n *MCNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32,
 	}
 
 	osFlags := int(flags) & (syscall.O_RDONLY | syscall.O_WRONLY | syscall.O_RDWR |
-		syscall.O_APPEND | syscall.O_CREAT | syscall.O_TRUNC)
+		syscall.O_APPEND | syscall.O_CREAT | syscall.O_EXCL | syscall.O_TRUNC | syscall.O_NOFOLLOW)
 	f, err := os.OpenFile(n.realPath, osFlags, 0644)
 	if err != nil {
 		return nil, 0, fs.ToErrno(err)
@@ -205,7 +209,7 @@ func (n *MCNode) Create(ctx context.Context, name string, flags uint32, mode uin
 	out.Attr.FromStat(&st)
 
 	child := n.childNode(name)
-	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT}
+	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT, Ino: st.Ino}
 	inode := n.NewInode(ctx, child, stable)
 
 	if isTextConfig(childPath) {
@@ -231,7 +235,7 @@ func (n *MCNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.
 	}
 	out.Attr.FromStat(&st)
 	child := n.childNode(name)
-	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT}
+	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT, Ino: st.Ino}
 	inode := n.NewInode(ctx, child, stable)
 	return inode, fs.OK
 }
@@ -251,6 +255,12 @@ func (n *MCNode) Rename(ctx context.Context, name string, newParent fs.InodeEmbe
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return fs.ToErrno(err)
 	}
+	// Update realPath on the moved node so reused inodes stay correct.
+	if ch := n.GetChild(name); ch != nil {
+		if moved, ok := ch.Operations().(*MCNode); ok {
+			moved.realPath = newPath
+		}
+	}
 	if verbose {
 		log.Printf("[RENAME] %s → %s", oldPath, newPath)
 	}
@@ -268,7 +278,7 @@ func (n *MCNode) Symlink(ctx context.Context, target, name string, out *fuse.Ent
 	}
 	out.Attr.FromStat(&st)
 	child := n.childNode(name)
-	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT}
+	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT, Ino: st.Ino}
 	inode := n.NewInode(ctx, child, stable)
 	return inode, fs.OK
 }
@@ -293,7 +303,7 @@ func (n *MCNode) Link(ctx context.Context, target fs.InodeEmbedder, name string,
 	}
 	out.Attr.FromStat(&st)
 	child := n.childNode(name)
-	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT}
+	stable := fs.StableAttr{Mode: st.Mode & syscall.S_IFMT, Ino: st.Ino}
 	inode := n.NewInode(ctx, child, stable)
 	return inode, fs.OK
 }

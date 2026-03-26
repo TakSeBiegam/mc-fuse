@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+var placeholderTokenRe = regexp.MustCompile(`\$\{([^{}]+)\}`)
 
 func loadSecrets(sopsFile string) (map[string]string, error) {
 	if _, err := os.Stat(sopsFile); err != nil {
@@ -51,30 +54,32 @@ func buildReverseMap(secrets map[string]string) map[string]string {
 
 func substituteSecrets(data []byte, secrets map[string]string) ([]byte, []string) {
 	s := string(data)
-	var unresolved []string
+	unresolvedSet := make(map[string]struct{})
 
-	for {
-		start := strings.Index(s, "${")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(s[start:], "}")
-		if end == -1 {
-			break
-		}
-		end += start
+	const maxPasses = 128
+	for pass := 0; pass < maxPasses; pass++ {
+		changed := false
+		s = placeholderTokenRe.ReplaceAllStringFunc(s, func(token string) string {
+			key := token[2 : len(token)-1]
+			val, ok := secrets[key]
+			if !ok {
+				unresolvedSet[key] = struct{}{}
+				return token
+			}
+			if val != token {
+				changed = true
+			}
+			return val
+		})
 
-		key := s[start+2 : end]
-		if val, ok := secrets[key]; ok {
-			s = s[:start] + val + s[end+1:]
-		} else {
-			unresolved = append(unresolved, key)
-			s = s[:start] + "\x00UNRESOLVED:" + key + "\x00" + s[end+1:]
+		if !changed {
+			break
 		}
 	}
 
-	for _, key := range unresolved {
-		s = strings.ReplaceAll(s, "\x00UNRESOLVED:"+key+"\x00", "${"+key+"}")
+	unresolved := make([]string, 0, len(unresolvedSet))
+	for key := range unresolvedSet {
+		unresolved = append(unresolved, key)
 	}
 
 	return []byte(s), unresolved

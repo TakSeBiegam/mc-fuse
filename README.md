@@ -44,7 +44,7 @@ encrypted secrets.yaml
 - zero plaintext secrets written by `mc-fuse`
 - supports shared values plus per-server overrides
 - validates placeholders before launch
-- auto-detects the server JAR
+- auto-detects Paper and Velocity JARs
 - optional auto-restart on crash
 - simple single-binary CLI
 
@@ -145,6 +145,7 @@ mc-fuse --secrets <file> [options] <server-directory>
 | `--mount` | `deployments/<name>` | Mount directory |
 | `--jar` | auto | Server jar path inside the source directory |
 | `--java-opts` | | Extra JVM flags |
+| `--missing-envs` | `warning` | How unresolved placeholders are handled: `warning` or `error` |
 | `--dry-run` | `false` | Validate placeholders and exit |
 | `--restart` | `false` | Restart after a crash |
 | `--debug` | `false` | Enable FUSE debug logs |
@@ -157,6 +158,16 @@ mc-fuse --secrets <file> [options] <server-directory>
 
 ```bash
 ./mc-fuse --secrets secrets.enc.yaml ./servers/lobby
+```
+
+### Velocity proxy
+
+```bash
+./mc-fuse \
+  --values ./servers/secrets.enc.yaml \
+  --secrets ./servers/proxy/secrets.enc.yaml \
+  --ram 512M \
+  ./servers/proxy
 ```
 
 ### Shared values + server overrides
@@ -178,6 +189,12 @@ mc-fuse --secrets <file> [options] <server-directory>
 
 ```bash
 ./mc-fuse --secrets secrets.enc.yaml --mount /tmp/mc-lobby ./servers/lobby
+```
+
+### Abort on missing envs
+
+```bash
+./mc-fuse --secrets secrets.enc.yaml --missing-envs error ./servers/lobby
 ```
 
 ## Shared values
@@ -219,6 +236,54 @@ These files get placeholder substitution:
 
 Other files pass through unchanged.
 
+## Missing env behavior
+
+By default `mc-fuse` does not abort on unresolved placeholders.
+
+- `--missing-envs warning`: print the count and list of missing placeholders, then continue
+- `--missing-envs error`: print the count and list, then abort
+
+Example warning:
+
+```text
+[mc-fuse] WARNING: found 3 unresolved placeholders
+```
+
+## Server types
+
+`mc-fuse` auto-detects:
+
+- `paper-*.jar` as Paper
+- `velocity-*.jar` or `velocity.toml` as Velocity
+
+Launch behavior:
+
+- Paper starts with `--nogui`
+- Velocity starts without `--nogui`
+- Velocity gets these JVM defaults:
+
+```text
+-Xms<min> -Xmx<max> -XX:+UseG1GC -XX:G1HeapRegionSize=4M \
+-XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled \
+-XX:+AlwaysPreTouch -XX:MaxInlineLevel=15
+```
+
+So this command:
+
+```bash
+./mc-fuse \
+  --secrets minecraft-servers/servers/proxy/secrets.enc.yaml \
+  --values minecraft-servers/servers/secrets.enc.yaml \
+  --ram 512M \
+  minecraft-servers/servers/proxy/
+```
+
+will start Velocity with an effective command like:
+
+```bash
+java -Xms512M -Xmx512M -XX:+UseG1GC -XX:G1HeapRegionSize=4M -XX:+UnlockExperimentalVMOptions -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:MaxInlineLevel=15 -jar velocity-3.5.0.jar
+```
+
 ## Safety model
 
 What `mc-fuse` does:
@@ -252,14 +317,3 @@ This repository includes a GitHub Actions workflow that:
 - builds on push and pull request
 - cross-compiles `linux-amd64` and `linux-arm64`
 - publishes `.tar.gz` archives on version tags like `v1.2.0`
-
-## Development
-
-```bash
-go build ./...
-go test ./...
-```
-
-## License
-
-MIT

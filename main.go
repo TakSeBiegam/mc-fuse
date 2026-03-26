@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +28,7 @@ func main() {
 	mountDir := flag.String("mount", "", "FUSE mount point (default: deployments/<server-name>)")
 	jarFile := flag.String("jar", "", "Server JAR file (auto-detected if not set)")
 	extraJavaOpts := flag.String("java-opts", "", "Additional JVM flags")
+	missingEnvs := flag.String("missing-envs", "warning", "How to handle unresolved placeholders: warning or error")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	dryRun := flag.Bool("dry-run", false, "Validate secrets and exit without starting")
 	debug := flag.Bool("debug", false, "Enable FUSE debug logging")
@@ -59,6 +61,10 @@ Options:
 
 	if *secretsFile == "" {
 		log.Fatal("ERROR: --secrets is required\n\nUsage: mc-fuse --secrets <file> [options] <server-directory>")
+	}
+
+	if *missingEnvs != "warning" && *missingEnvs != "error" {
+		log.Fatal("ERROR: --missing-envs must be one of: warning, error")
 	}
 
 	if flag.NArg() < 1 {
@@ -112,30 +118,30 @@ Options:
 	log.Printf("Validating placeholders in: %s", serverDir)
 	errors := validateSecrets(serverDir, secrets)
 	if len(errors) > 0 {
-		log.Println("ERROR: Unresolved placeholders found:")
+		log.Printf("%s: found %d unresolved placeholders", strings.ToUpper(*missingEnvs), len(errors))
 		for _, e := range errors {
 			fmt.Fprintln(os.Stderr, e)
 		}
-		log.Fatal("ABORT: Add missing secrets to your SOPS file and try again.")
+		if *missingEnvs == "error" {
+			log.Fatal("ABORT: Add missing secrets to your SOPS file and try again.")
+		}
+		log.Println("Continuing with unresolved placeholders.")
+	} else {
+		log.Println("Validation OK — all placeholders have matching secrets.")
 	}
-	log.Println("Validation OK — all placeholders have matching secrets.")
-
 	if *dryRun {
 		log.Println("--dry-run: validation complete, server will not start.")
 		os.Exit(0)
 	}
-
 	serverName := filepath.Base(serverDir)
 	if *mountDir == "" {
 		workspaceDir := filepath.Dir(filepath.Dir(serverDir))
 		deploymentsDir := filepath.Join(workspaceDir, "deployments")
 		*mountDir = filepath.Join(deploymentsDir, serverName)
 	}
-
 	if err := os.MkdirAll(*mountDir, 0755); err != nil {
 		log.Fatalf("ERROR: cannot create mount directory: %v", err)
 	}
-
 	mountPath, err := filepath.Abs(*mountDir)
 	if err != nil {
 		log.Fatalf("ERROR: %v", err)
@@ -148,13 +154,14 @@ Options:
 			log.Fatalf("ERROR: %v", err)
 		}
 	}
+	kind := detectServerKind(serverDir, jar)
 
 	reverseMap := buildReverseMap(secrets)
 
 	verbose = *verboseFlag || *debug
 	log.Printf("Mounting FUSE: %s → %s", serverDir, mountPath)
 	root := newMCNode(serverDir, secrets, reverseMap)
-	zero := time.Duration(0)
+	cacheTimeout := time.Hour
 	server, err := fs.Mount(mountPath, root, &fs.Options{
 		MountOptions: fuse.MountOptions{
 			AllowOther: false,
@@ -162,8 +169,8 @@ Options:
 			Name:       "mc-fuse",
 			Debug:      *debug,
 		},
-		AttrTimeout:  &zero,
-		EntryTimeout: &zero,
+		AttrTimeout:  &cacheTimeout,
+		EntryTimeout: &cacheTimeout,
 	})
 	if err != nil {
 		log.Fatalf("ERROR: FUSE mount failed: %v\nCheck if /dev/fuse exists and you have permissions.", err)
@@ -172,16 +179,17 @@ Options:
 
 	log.Printf("FUSE mounted: %s", mountPath)
 
-	javaOpts := fmt.Sprintf("-Xms%s -Xmx%s -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200",
-		*minRam, *ram)
+	javaOpts := defaultJavaOpts(kind, *minRam, *ram)
 	if *extraJavaOpts != "" {
 		javaOpts += " " + *extraJavaOpts
 	}
 
-	log.Printf("Starting server: java %s -jar %s --nogui", javaOpts, jar)
+	launchArgs := buildLaunchArgs(kind, jar, javaOpts)
+	log.Printf("Server type: %s", kind)
+	log.Printf("Starting server: java %s", strings.Join(launchArgs, " "))
 	log.Printf("Working directory: %s", mountPath)
 
-	cmd, err := launchServer(mountPath, jar, javaOpts)
+	cmd, err := launchServer(mountPath, kind, jar, javaOpts)
 	if err != nil {
 		log.Fatalf("ERROR: %v", err)
 	}
@@ -233,8 +241,9 @@ Options:
 			if cleanShutdown {
 				break
 			}
-			log.Printf("Starting server: java %s -jar %s --nogui", javaOpts, jar)
-			cmd, err = launchServer(mountPath, jar, javaOpts)
+			launchArgs = buildLaunchArgs(kind, jar, javaOpts)
+			log.Printf("Starting server: java %s", strings.Join(launchArgs, " "))
+			cmd, err = launchServer(mountPath, kind, jar, javaOpts)
 			if err != nil {
 				log.Fatalf("ERROR on restart: %v", err)
 			}
